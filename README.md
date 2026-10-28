@@ -18,8 +18,18 @@ Burp  ──►  HTTP handler  ──►  in-scope + JavaScript?  ──►  ded
 - No Maven or Gradle — one shell script builds the jar and runs the tests
 - Everything stays in memory for the current Burp session; nothing is uploaded
 
+## Screenshot
+
+![JS Analyzer tab in Burp Suite: collected file list, and the Secrets tab of a selected bundle](docs/js-analyzer.png)
+
+A live passive session: every in-scope bundle of a production site collected and
+analyzed once (`36 files · 36 analyzed · 0 errors`). The 734 kB main bundle is
+selected — 139 endpoints, 52 secret matches, 6 Ajax calls, 9 DOM XSS leads and
+9 action-named functions — and its **Secrets** tab is open on the right.
+
 ## Contents
 
+- [Screenshot](#screenshot)
 - [Requirements](#requirements)
 - [Build](#build)
 - [Install in Burp](#install-in-burp)
@@ -288,6 +298,7 @@ src/main/java/jsanalyzer/
   ui/ReportBuilder.java      text report export
   ui/SourceExporter.java     source folder export and manifest
 src/test/java/jsanalyzer/    regression suites (plain Java, no JUnit)
+docs/js-analyzer.png       screenshot used by this README
 ```
 
 ## Tests
