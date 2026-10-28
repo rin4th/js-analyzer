@@ -27,7 +27,13 @@ public final class BurpExtender implements BurpExtension {
             api.logging().logToOutput("JS Analyzer unloaded");
         });
 
-        api.logging().logToOutput("JS Analyzer loaded — in-scope JavaScript responses are collected "
-                + "and analyzed once per file.");
+        api.logging().logToOutput("JS Analyzer " + version() + " loaded — in-scope JavaScript "
+                + "responses are collected and analyzed once per file.");
+    }
+
+    /** Manifest {@code Implementation-Version}; lets the Output tab prove which build is active. */
+    private static String version() {
+        String version = BurpExtender.class.getPackage().getImplementationVersion();
+        return version == null || version.isBlank() ? "dev" : version;
     }
 }

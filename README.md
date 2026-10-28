@@ -68,7 +68,9 @@ registration for `burp.api.montoya.BurpExtension`. Build output goes to
    collected.
 5. Browse the target. A **JS Analyzer** tab appears in Burp's main tab bar.
 
-The extension logs `JS Analyzer loaded` to the extension Output tab. If the tab
+The extension logs `JS Analyzer <version> loaded` (for example
+`JS Analyzer 1.3.1 loaded`) to the extension Output tab, so you can confirm
+which build Burp is actually running. If the tab
 does not appear, check the Output/Errors tabs for a class-loading or
 API-version error, and confirm the Burp version is 2024.7 or newer.
 
@@ -334,7 +336,7 @@ dependency beyond the JDK and the Montoya API jar. They run headless
   keep `BurpHistoryImporter` consistent — it applies the same rules to stored
   responses.
 - The version in the jar manifest is set in `build.sh`
-  (`Implementation-Version: 1.3.0`).
+  (`Implementation-Version: 1.3.1`).
 
 ## Limitations
 

@@ -32,6 +32,7 @@ public final class EngineTest {
         functionTests();
         combinedTests();
         syntaxStressTests();
+        bindingSpaceTests();
 
         System.out.println();
         System.out.println("passed: " + passed + ", failed: " + failed);
@@ -461,6 +462,46 @@ public final class EngineTest {
                 c.url().equals("/api/v9/items")), result.ajaxCalls.toString());
         checkTrue("stress.privateFieldNotSensitive", result.sensitiveFindings.stream().noneMatch(f ->
                 f.value().contains("#token")), result.sensitiveFindings.toString());
+    }
+
+    // ------------------------------------------------------------------
+    // Bindings across re-lexed token lists
+    // ------------------------------------------------------------------
+
+    /**
+     * A template expression is re-lexed on its own, so its token indices differ
+     * from the file-wide list. Binding ranges must never be applied to that
+     * smaller list; the bound text is what carries over.
+     */
+    private static void bindingSpaceTests() {
+        String fetchTemplate = "const base = '/api';fetch(`${base}/users`);";
+        check("bindings.template.fetch", Analyzer.analyze(fetchTemplate).ajaxCalls,
+                List.of(new AjaxFinding("fetch", "${/api}/users", "GET", List.of(), 1)));
+
+        String twoBindings = "const apiBase = '/api/v1';const p = '/products';"
+                + "fetch(`${apiBase}${p}?id=1`);";
+        check("bindings.template.twoIdentifiers", Analyzer.analyze(twoBindings).ajaxCalls,
+                List.of(new AjaxFinding("fetch", "${/api/v1}${/products}?id=1", "GET",
+                        List.of("id"), 1)));
+
+        String jqueryTemplate = "let u = '/x';$.ajax({url: `${u}/y`});";
+        check("bindings.template.jquery", Analyzer.analyze(jqueryTemplate).ajaxCalls,
+                List.of(new AjaxFinding("jquery.ajax", "${/x}/y", "GET", List.of(), 1)));
+
+        String nested = "const href = 'https://cdn.example.test/a.js';"
+                + "fetch(`/api/v1/${`x${href}`}`);";
+        checkTrue("bindings.template.nested", !Analyzer.analyze(nested).ajaxCalls.isEmpty(),
+                Analyzer.analyze(nested).ajaxCalls.toString());
+
+        // Deep chains and self-references must terminate instead of recursing.
+        String chain = "const a = b;const b = c;const c = '/api/deep';fetch(`${a}`);";
+        check("bindings.template.chain", Analyzer.analyze(chain).ajaxCalls,
+                List.of(new AjaxFinding("fetch", "${/api/deep}", "GET", List.of(), 1)));
+
+        String selfReference = "const loop = loop;fetch(`${loop}/x`);";
+        checkTrue("bindings.template.selfReference",
+                !Analyzer.analyze(selfReference).ajaxCalls.isEmpty(),
+                Analyzer.analyze(selfReference).ajaxCalls.toString());
     }
 
     // ------------------------------------------------------------------

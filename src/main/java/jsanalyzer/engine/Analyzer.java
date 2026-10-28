@@ -55,7 +55,7 @@ public final class Analyzer {
                     + tokens.size());
             stage = System.nanoTime();
         }
-        Map<String, int[]> bindings = collectBindings(tokens);
+        Map<String, Binding> bindings = collectBindings(tokens, src);
 
         List<EndpointFinding> endpoints = extractEndpoints(tokens);
         List<SensitiveFinding> sensitive = extractSensitive(tokens, src);
@@ -166,8 +166,8 @@ public final class Analyzer {
     // Bindings
     // ------------------------------------------------------------------
 
-    private static Map<String, int[]> collectBindings(List<Token> tokens) {
-        Map<String, int[]> bindings = new LinkedHashMap<>();
+    private static Map<String, Binding> collectBindings(List<Token> tokens, String source) {
+        Map<String, Binding> bindings = new LinkedHashMap<>();
         int size = tokens.size();
         for (int i = 0; i < size; i++) {
             Token token = tokens.get(i);
@@ -181,7 +181,7 @@ public final class Analyzer {
                     if (j + 1 < size && tokens.get(j + 1).isPunct("=")) {
                         int end = Tokens.expressionEnd(tokens, j + 2);
                         if (end > j + 2) {
-                            bindings.put(nameToken.text, new int[]{j + 2, Math.min(end, size)});
+                            putBinding(bindings, tokens, source, nameToken.text, j + 2, Math.min(end, size));
                         }
                         j = end;
                         if (j < size && tokens.get(j).isPunct(",")) {
@@ -196,11 +196,19 @@ public final class Analyzer {
                     && tokens.get(i + 1).text.equals("=")) {
                 int end = Tokens.expressionEnd(tokens, i + 2);
                 if (end > i + 2) {
-                    bindings.put(token.text, new int[]{i + 2, Math.min(end, size)});
+                    putBinding(bindings, tokens, source, token.text, i + 2, Math.min(end, size));
                 }
             }
         }
         return bindings;
+    }
+
+    private static void putBinding(Map<String, Binding> bindings, List<Token> tokens, String source,
+                                   String name, int from, int to) {
+        if (name == null || name.isEmpty() || from < 0 || from >= to) {
+            return;
+        }
+        bindings.put(name, new Binding(from, to, Tokens.slice(source, tokens, from, to)));
     }
 
     private static boolean isDeclarationKeyword(String text) {
@@ -266,7 +274,7 @@ public final class Analyzer {
     // String resolution
     // ------------------------------------------------------------------
 
-    static String templateValue(Token token, Map<String, int[]> bindings, int depth) {
+    static String templateValue(Token token, Map<String, Binding> bindings, int depth) {
         StringBuilder builder = new StringBuilder();
         for (int i = 0; i < token.quasis.size(); i++) {
             builder.append(token.quasis.get(i));
@@ -280,7 +288,7 @@ public final class Analyzer {
         return builder.toString();
     }
 
-    static String resolveExpression(String expression, Map<String, int[]> bindings, int depth) {
+    static String resolveExpression(String expression, Map<String, Binding> bindings, int depth) {
         if (expression == null || expression.isBlank() || depth > 8) {
             return "";
         }
@@ -294,8 +302,8 @@ public final class Analyzer {
      * concatenations. Anything else falls back to the source text.
      */
     static String resolveRange(List<Token> tokens, int from, int to, String source,
-                               Map<String, int[]> bindings, int depth) {
-        if (from >= to || depth > 8) {
+                               Map<String, Binding> bindings, int depth) {
+        if (from < 0 || from >= to || to > tokens.size() || depth > 8) {
             return "";
         }
         int start = from;
@@ -411,9 +419,15 @@ public final class Analyzer {
                 return templateValue(token, bindings, depth + 1);
             }
             if (token.kind == Token.Kind.NAME) {
-                int[] binding = bindings.get(token.text);
-                if (binding != null && depth < 8) {
-                    return resolveRange(tokens, binding[0], binding[1], source, bindings, depth + 1);
+                Binding binding = bindings.get(token.text);
+                if (binding != null && depth < 8 && !binding.text.isBlank()
+                        && !binding.text.equals(token.text)) {
+                    // Resolve the bound expression from its own text: the token
+                    // indices belong to the file-wide list, not to this one.
+                    String resolved = resolveExpression(binding.text, bindings, depth + 1);
+                    if (resolved != null && !resolved.isBlank()) {
+                        return resolved;
+                    }
                 }
                 return token.text;
             }
@@ -585,7 +599,7 @@ public final class Analyzer {
     // ------------------------------------------------------------------
 
     private static List<AjaxFinding> extractAjax(List<Token> tokens, String source,
-                                                 Map<String, int[]> bindings) {
+                                                 Map<String, Binding> bindings) {
         Map<String, Set<String>> formData = new LinkedHashMap<>();
         Set<String> xhrVariables = new LinkedHashSet<>();
         int size = tokens.size();
@@ -677,7 +691,7 @@ public final class Analyzer {
     }
 
     private static AjaxFinding fromFetch(List<Token> tokens, String source,
-                                         Map<String, int[]> bindings,
+                                         Map<String, Binding> bindings,
                                          Map<String, Set<String>> formData, int index) {
         int paren = index + 1;
         List<int[]> args = Tokens.splitArguments(tokens, paren);
@@ -708,7 +722,7 @@ public final class Analyzer {
     }
 
     private static AjaxFinding fromJquery(List<Token> tokens, String source,
-                                          Map<String, int[]> bindings,
+                                          Map<String, Binding> bindings,
                                           Map<String, Set<String>> formData, int index) {
         int paren = index + 1;
         List<int[]> args = Tokens.splitArguments(tokens, paren);
@@ -754,7 +768,7 @@ public final class Analyzer {
     }
 
     private static AjaxFinding fromXhr(List<Token> tokens, String source,
-                                       Map<String, int[]> bindings,
+                                       Map<String, Binding> bindings,
                                        Map<String, Set<String>> formData,
                                        Set<String> xhrVariables, int index) {
         int paren = index + 3;
@@ -821,7 +835,7 @@ public final class Analyzer {
     }
 
     private static int[] objectProperty(List<Token> tokens, int from, int to, String wanted,
-                                        Map<String, int[]> bindings) {
+                                        Map<String, Binding> bindings) {
         int[] range = trimRange(tokens, from, to);
         if (range == null) {
             return null;
@@ -832,8 +846,11 @@ public final class Analyzer {
             return objectProperty(tokens, from + 1, to - 1, wanted, bindings);
         }
         if (to - from == 1 && tokens.get(from).kind == Token.Kind.NAME) {
-            int[] binding = bindings.get(tokens.get(from).text);
-            return binding == null ? null : objectProperty(tokens, binding[0], binding[1], wanted, bindings);
+            Binding binding = bindings.get(tokens.get(from).text);
+            if (binding == null || !binding.fits(tokens.size())) {
+                return null;
+            }
+            return objectProperty(tokens, binding.from, binding.to, wanted, bindings);
         }
         if (!tokens.get(from).isPunct("{")) {
             return null;
@@ -919,7 +936,7 @@ public final class Analyzer {
     }
 
     private static List<String> parametersFor(List<Token> tokens, String source,
-                                              Map<String, int[]> bindings,
+                                              Map<String, Binding> bindings,
                                               Map<String, Set<String>> formData,
                                               int[] bodyRange, String url) {
         LinkedHashSet<String> parameters = new LinkedHashSet<>();
@@ -931,7 +948,7 @@ public final class Analyzer {
     }
 
     private static void collectKeys(List<Token> tokens, String source,
-                                    Map<String, int[]> bindings,
+                                    Map<String, Binding> bindings,
                                     Map<String, Set<String>> formData,
                                     int from, int to, Set<String> output, int depth) {
         if (depth > 8) {
@@ -953,9 +970,9 @@ public final class Analyzer {
                 output.addAll(formData.get(first.text));
                 return;
             }
-            int[] binding = bindings.get(first.text);
-            if (binding != null) {
-                collectKeys(tokens, source, bindings, formData, binding[0], binding[1], output, depth + 1);
+            Binding binding = bindings.get(first.text);
+            if (binding != null && binding.fits(tokens.size())) {
+                collectKeys(tokens, source, bindings, formData, binding.from, binding.to, output, depth + 1);
             }
             return;
         }
@@ -1002,7 +1019,7 @@ public final class Analyzer {
         }
     }
 
-    private static void addSpreadKeys(List<Token> tokens, String source, Map<String, int[]> bindings,
+    private static void addSpreadKeys(List<Token> tokens, String source, Map<String, Binding> bindings,
                                       Map<String, Set<String>> formData, int from, int to,
                                       Set<String> output, int depth) {
         for (int i = from + 1; i < to; i++) {
