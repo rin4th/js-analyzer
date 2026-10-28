@@ -1,0 +1,19 @@
+# Build output
+build/
+dist/
+out/
+*.class
+
+# Downloaded compile-time dependency (build.sh fetches it)
+libs/*.jar
+
+# IDE / editor
+.idea/
+*.iml
+.vscode/
+*.swp
+*~
+
+# OS noise
+.DS_Store
+Thumbs.db
