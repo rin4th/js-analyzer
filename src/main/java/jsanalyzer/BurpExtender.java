@@ -16,6 +16,7 @@ public final class BurpExtender implements BurpExtension {
         api.extension().setName("JS Analyzer");
 
         AnalysisStore store = new AnalysisStore();
+        store.setSourceProvider(new BurpSourceProvider(api));
         ScriptAutoFetcher autoFetcher = new ScriptAutoFetcher(api, store);
         AnalyzerTab tab = new AnalyzerTab(api, store, autoFetcher);
         api.userInterface().registerSuiteTab("JS Analyzer", tab);

@@ -2,7 +2,15 @@ package jsanalyzer.store;
 
 import jsanalyzer.model.AnalysisResult;
 
-/** One JavaScript file seen in scope, with its analysis state. */
+/**
+ * One JavaScript file seen in scope, with its analysis state.
+ *
+ * <p>Only findings and metadata are kept: the response body is analyzed on a
+ * worker thread and then dropped, so a session that collects hundreds of
+ * multi-megabyte bundles does not hold their text in Burp's heap. Anything that
+ * needs the code again (Export .js files…, Re-analyze) fetches it on demand
+ * through {@link SourceProvider}.</p>
+ */
 public final class JsFile {
 
     public final String key;
@@ -14,7 +22,6 @@ public final class JsFile {
     public volatile int statusCode;
     public volatile int size;
     public volatile String contentHash;
-    public volatile String source;
     public volatile String status = "Queued";
     public volatile String error;
     public volatile AnalysisResult result;
@@ -22,7 +29,7 @@ public final class JsFile {
     public volatile int hits = 1;
 
     public JsFile(String key, String url, String host, int statusCode, String contentType, int size,
-                  String contentHash, String source) {
+                  String contentHash) {
         this.key = key;
         this.url = url;
         this.host = host;
@@ -30,7 +37,6 @@ public final class JsFile {
         this.contentType = contentType;
         this.size = size;
         this.contentHash = contentHash;
-        this.source = source;
         this.firstSeen = System.currentTimeMillis();
         this.lastSeen = firstSeen;
     }

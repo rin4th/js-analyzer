@@ -8,6 +8,7 @@ import jsanalyzer.model.SensitiveFinding;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -66,17 +67,27 @@ public final class Analyzer {
             stage = System.nanoTime();
         }
         Set<String> endpointValues = new HashSet<>();
-        List<EndpointFinding> allEndpoints = new ArrayList<>(endpoints);
+        Map<String, Set<String>> inferredMethods = new HashMap<>();
+        for (AjaxFinding call : ajax) {
+            String url = call.url();
+            if (!isEndpoint(url) || call.method() == null || call.method().isBlank()) {
+                continue;
+            }
+            inferredMethods.computeIfAbsent(url, key -> new LinkedHashSet<>()).add(call.method());
+        }
+        List<EndpointFinding> allEndpoints = new ArrayList<>();
         for (EndpointFinding endpoint : endpoints) {
             endpointValues.add(endpoint.value());
+            allEndpoints.add(new EndpointFinding(endpoint.value(), endpoint.type(), endpoint.line(),
+                    joinMethods(inferredMethods.get(endpoint.value()))));
         }
         for (AjaxFinding call : ajax) {
             String url = call.url();
-            if (!isEndpoint(url) || endpointValues.contains(url)) {
+            if (!isEndpoint(url) || !endpointValues.add(url)) {
                 continue;
             }
-            endpointValues.add(url);
-            allEndpoints.add(new EndpointFinding(url, endpointType(url), call.line()));
+            allEndpoints.add(new EndpointFinding(url, endpointType(url), call.line(),
+                    joinMethods(inferredMethods.get(url))));
         }
         allEndpoints.sort((a, b) -> a.line() != b.line()
                 ? Integer.compare(a.line(), b.line())
@@ -239,6 +250,16 @@ public final class Analyzer {
             findings.add(new EndpointFinding(candidate, endpointType(candidate), token.line));
         }
         return findings;
+    }
+
+    /** "GET" / "GET, POST" / "" for endpoints with no method in the source. */
+    private static String joinMethods(Set<String> methods) {
+        if (methods == null || methods.isEmpty()) {
+            return "";
+        }
+        List<String> sorted = new ArrayList<>(methods);
+        sorted.sort(String::compareTo);
+        return String.join(", ", sorted);
     }
 
     static boolean isEndpoint(String value) {

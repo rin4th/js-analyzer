@@ -31,7 +31,7 @@ mkdir -p build/classes/META-INF/services
 cp build/META-INF/services/burp.api.montoya.BurpExtension \
    build/classes/META-INF/services/burp.api.montoya.BurpExtension
 
-printf 'Manifest-Version: 1.0\nImplementation-Title: JS Analyzer\nImplementation-Version: 1.3.1\nCreated-By: build.sh\n\n' \
+printf 'Manifest-Version: 1.0\nImplementation-Title: JS Analyzer\nImplementation-Version: 1.6.0\nCreated-By: build.sh\n\n' \
   > build/MANIFEST.MF
 
 jar --create --file dist/js-analyzer-burp.jar --manifest build/MANIFEST.MF -C build/classes .
@@ -41,6 +41,7 @@ if [ "${1:-build}" = "test" ]; then
   javac --release 17 -cp "$MONTOYA_JAR:build/classes" -d build/test-classes @build/test-sources.txt
   java -Djava.awt.headless=true -cp "build/classes:build/test-classes" jsanalyzer.EngineTest
   java -Djava.awt.headless=true -cp "build/classes:build/test-classes:$MONTOYA_JAR" jsanalyzer.BurpHistoryImporterTest
+  java -Djava.awt.headless=true -cp "build/classes:build/test-classes:$MONTOYA_JAR" jsanalyzer.BurpSourceProviderTest
   java -Djava.awt.headless=true -cp "build/classes:build/test-classes:$MONTOYA_JAR" jsanalyzer.ManualFetcherTest
   java -Djava.awt.headless=true -cp "build/classes:build/test-classes:$MONTOYA_JAR" jsanalyzer.HtmlScriptExtractorTest
   java -Djava.awt.headless=true -cp "build/classes:build/test-classes:$MONTOYA_JAR" jsanalyzer.ScriptAutoFetcherTest

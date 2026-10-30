@@ -29,11 +29,36 @@ public final class AnalysisStore {
     private final Map<String, JsFile> files = new LinkedHashMap<>();
     private final List<Listener> listeners = new CopyOnWriteArrayList<>();
     private final ExecutorService executor;
+    private final TrafficIndex traffic = new TrafficIndex();
+    private volatile SourceProvider sourceProvider;
 
     public boolean contains(String url) {
         synchronized (files) {
             return files.containsKey(normalizeKey(url));
         }
+    }
+
+    /** Records an in-scope request so endpoints can show methods Burp actually saw. */
+    public void recordRequest(String path, String method) {
+        traffic.record(path, method);
+    }
+
+    /** "POST" / "GET, POST" observed for an endpoint value, or "". */
+    public String observedMethods(String endpointValue) {
+        return traffic.methodsFor(endpointValue);
+    }
+
+    public int observedPathCount() {
+        return traffic.size();
+    }
+
+    /** Provides the code on demand for re-analysis and source export. */
+    public void setSourceProvider(SourceProvider provider) {
+        this.sourceProvider = provider;
+    }
+
+    public SourceProvider sourceProvider() {
+        return sourceProvider;
     }
 
     public AnalysisStore() {
@@ -61,6 +86,7 @@ public final class AnalysisStore {
         }
         String key = normalizeKey(url);
         String hash = contentHash(body);
+        int bytes = utf8Length(body);
         JsFile file;
         boolean analyze = true;
         synchronized (files) {
@@ -75,15 +101,13 @@ public final class AnalysisStore {
                     file.contentHash = hash;
                     file.statusCode = statusCode;
                     file.contentType = contentType;
-                    file.size = body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
-                    file.source = body;
+                    file.size = bytes;
                     file.status = "Queued";
                     file.error = null;
                     file.result = null;
                 }
             } else {
-                file = new JsFile(key, url, hostOf(url), statusCode, contentType,
-                        body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, hash, body);
+                file = new JsFile(key, url, hostOf(url), statusCode, contentType, bytes, hash);
                 files.put(key, file);
             }
         }
@@ -104,7 +128,6 @@ public final class AnalysisStore {
             try {
                 AnalysisResult result = Analyzer.analyze(body);
                 file.result = result;
-                file.source = body;
                 file.status = "Analyzed";
             } catch (Throwable throwable) {
                 file.error = throwable.getClass().getSimpleName() + ": " + throwable.getMessage();
@@ -140,17 +163,49 @@ public final class AnalysisStore {
         synchronized (files) {
             files.clear();
         }
+        traffic.clear();
         notifyListeners();
     }
 
+    /**
+     * Re-runs the analysis for a file by fetching its code again (the body is
+     * not retained after the first analysis). Failures are recorded on the
+     * entry instead of throwing.
+     */
     public void reanalyze(JsFile file) {
-        if (file == null || file.source == null) {
+        if (file == null) {
             return;
         }
+        SourceProvider provider = sourceProvider;
         file.status = "Queued";
         file.error = null;
         file.result = null;
-        analyzeAsync(file, file.source);
+        notifyListeners();
+        if (provider == null) {
+            file.status = "Error";
+            file.error = "No source provider: re-analysis needs Burp's HTTP stack";
+            notifyListeners();
+            return;
+        }
+        executor.submit(() -> {
+            file.status = "Analyzing";
+            notifyListeners();
+            try {
+                String body = provider.fetch(file.url);
+                if (body == null || body.isEmpty()) {
+                    throw new java.io.IOException("empty response body");
+                }
+                file.contentHash = contentHash(body);
+                file.size = utf8Length(body);
+                AnalysisResult result = Analyzer.analyze(body);
+                file.result = result;
+                file.status = "Analyzed";
+            } catch (Throwable throwable) {
+                file.error = throwable.getClass().getSimpleName() + ": " + throwable.getMessage();
+                file.status = "Error";
+            }
+            notifyListeners();
+        });
     }
 
     public void shutdown() {
@@ -193,13 +248,35 @@ public final class AnalysisStore {
     }
 
     /** Cheap content fingerprint; only used to detect whether a file changed. */
-    static String contentHash(String body) {
+    public static String contentHash(String body) {
         long hash = 1125899906842597L;
         int step = body.length() > 500_000 ? 3 : 1;
         for (int i = 0; i < body.length(); i += step) {
             hash = 31 * hash + body.charAt(i);
         }
         return Integer.toHexString(body.hashCode()) + ":" + Long.toHexString(hash) + ":" + body.length();
+    }
+
+    /** Byte length of the body as UTF-8, without copying it. */
+    static int utf8Length(String body) {
+        int bytes = body.length();
+        for (int i = 0; i < body.length(); i++) {
+            char c = body.charAt(i);
+            if (c < 0x80) {
+                continue;
+            }
+            if (c < 0x800) {
+                bytes += 1;
+            } else if (Character.isHighSurrogate(c)) {
+                bytes += 2;
+                i++;
+            } else if (Character.isLowSurrogate(c)) {
+                continue;
+            } else {
+                bytes += 2;
+            }
+        }
+        return bytes;
     }
 
     public List<JsFile> analyzed() {

@@ -1,6 +1,8 @@
 package jsanalyzer.ui;
 
+import jsanalyzer.store.AnalysisStore;
 import jsanalyzer.store.JsFile;
+import jsanalyzer.store.SourceProvider;
 
 import java.io.IOException;
 import java.net.URI;
@@ -15,22 +17,35 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Writes every collected JavaScript source to a directory, preserving the
- * host and path structure (for example {@code example.test/static/app.js}),
- * plus a TSV manifest and a plain-text findings report.
+ * Writes the collected JavaScript files to a directory, preserving the host and
+ * path structure (for example {@code example.test/static/app.js}), plus a TSV
+ * manifest and a plain-text findings report.
+ *
+ * <p>Bodies are no longer held in memory, so each file is fetched again through
+ * the {@link SourceProvider} and written straight to disk; only one body is in
+ * memory at a time. A file whose content changed since it was analyzed is
+ * marked in the manifest instead of being reported as identical.</p>
  */
 public final class SourceExporter {
+
+    /** Reports export progress so the UI can show "Exporting 3/36…". */
+    public interface Progress {
+        void onFile(int done, int total, String url);
+    }
 
     public static final class Result {
         public final int exported;
         public final int skipped;
+        public final int changed;
         public final Path directory;
         public final Path manifest;
         public final List<String> errors;
 
-        Result(int exported, int skipped, Path directory, Path manifest, List<String> errors) {
+        Result(int exported, int skipped, int changed, Path directory, Path manifest,
+               List<String> errors) {
             this.exported = exported;
             this.skipped = skipped;
+            this.changed = changed;
             this.directory = directory;
             this.manifest = manifest;
             this.errors = List.copyOf(errors);
@@ -40,29 +55,54 @@ public final class SourceExporter {
     private SourceExporter() {
     }
 
-    public static Result export(List<JsFile> files, Path directory) {
+    public static Result export(List<JsFile> files, Path directory, SourceProvider provider) {
+        return export(files, directory, provider, (done, total, url) -> { });
+    }
+
+    public static Result export(List<JsFile> files, Path directory, SourceProvider provider,
+                                Progress progress) {
         List<String> errors = new ArrayList<>();
         Path root = directory.toAbsolutePath().normalize();
         try {
             Files.createDirectories(root);
         } catch (IOException exception) {
             errors.add("Cannot create " + root + ": " + exception.getMessage());
-            return new Result(0, files.size(), root, null, errors);
+            return new Result(0, files.size(), 0, root, null, errors);
+        }
+        if (provider == null) {
+            errors.add("No source provider: exporting needs Burp's HTTP stack");
+            return new Result(0, files.size(), 0, root, null, errors);
         }
 
         StringBuilder manifest = new StringBuilder(
                 "saved_file\turl\tstatus\tstatus_code\tcontent_type\tbytes\tendpoints\tsecrets\tajax"
-                        + "\tdom_xss\tfunctions\tfirst_seen\tlast_seen\thits\n");
+                        + "\tdom_xss\tfunctions\tfirst_seen\tlast_seen\thits\tcontent_changed\n");
         Set<String> used = new HashSet<>();
         int exported = 0;
         int skipped = 0;
+        int changed = 0;
+        int done = 0;
 
         for (JsFile file : files) {
-            String source = file.source;
-            if (source == null) {
+            progress.onFile(done, files.size(), file.url);
+            done++;
+            String body;
+            try {
+                body = provider.fetch(file.url);
+            } catch (IOException | RuntimeException exception) {
                 skipped++;
-                errors.add("No source captured for " + file.url);
+                errors.add("Cannot fetch " + file.url + ": " + exception.getMessage());
                 continue;
+            }
+            if (body == null || body.isEmpty()) {
+                skipped++;
+                errors.add("Empty body for " + file.url);
+                continue;
+            }
+            boolean contentChanged = file.contentHash != null
+                    && !file.contentHash.equals(AnalysisStore.contentHash(body));
+            if (contentChanged) {
+                changed++;
             }
             String relative = relativePath(file, used);
             Path target = root.resolve(relative).normalize();
@@ -76,7 +116,7 @@ public final class SourceExporter {
                 if (parent != null) {
                     Files.createDirectories(parent);
                 }
-                Files.writeString(target, source, StandardCharsets.UTF_8);
+                Files.writeString(target, body, StandardCharsets.UTF_8);
                 exported++;
                 manifest.append(relative.replace('\\', '/')).append('\t')
                         .append(clean(file.url)).append('\t')
@@ -91,12 +131,14 @@ public final class SourceExporter {
                         .append(file.functionCount()).append('\t')
                         .append(Instant.ofEpochMilli(file.firstSeen)).append('\t')
                         .append(Instant.ofEpochMilli(file.lastSeen)).append('\t')
-                        .append(file.hits).append('\n');
+                        .append(file.hits).append('\t')
+                        .append(contentChanged ? "yes" : "no").append('\n');
             } catch (IOException exception) {
                 skipped++;
                 errors.add("Cannot write " + relative + ": " + exception.getMessage());
             }
         }
+        progress.onFile(files.size(), files.size(), "");
 
         Path manifestPath = root.resolve("_manifest.tsv");
         try {
@@ -106,7 +148,7 @@ public final class SourceExporter {
         } catch (IOException exception) {
             errors.add("Cannot write manifest: " + exception.getMessage());
         }
-        return new Result(exported, skipped, root, manifestPath, errors);
+        return new Result(exported, skipped, changed, root, manifestPath, errors);
     }
 
     /** Builds a safe relative path such as {@code host/dir/file.js}. */

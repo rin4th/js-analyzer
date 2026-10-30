@@ -58,6 +58,7 @@ public final class ReportBuilder {
         builder.append("Endpoints (").append(result.endpoints.size()).append(")\n");
         for (EndpointFinding endpoint : result.endpoints) {
             builder.append("  [").append(endpoint.type()).append("] ").append(endpoint.value())
+                    .append("  ").append(endpoint.method().isEmpty() ? "-" : endpoint.method())
                     .append("  (L").append(endpoint.line()).append(")\n");
         }
         builder.append('\n');

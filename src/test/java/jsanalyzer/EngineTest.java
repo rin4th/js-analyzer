@@ -232,6 +232,24 @@ public final class EngineTest {
                 List.of(new EndpointFinding("https://target.test/api/users", "absolute", 2),
                         new EndpointFinding("/api/v1/files", "api", 3),
                         new EndpointFinding("handlers/upload.ashx?mode=create", "server-script", 4)));
+
+        // The method is read where the code passes one; bare strings have none.
+        String calls = "fetch('/api/v2/orders', { method: 'POST' });\n"
+                + "fetch('/api/v2/orders', { method: 'GET' });\n"
+                + "const bare = '/api/v2/bare';\n"
+                + "fetch('/api/v2/only-call');\n";
+        List<EndpointFinding> withMethods = Analyzer.analyze(calls).endpoints;
+        checkTrue("endpoints.method.multiple", withMethods.stream().anyMatch(endpoint ->
+                        endpoint.value().equals("/api/v2/orders")
+                                && endpoint.method().equals("GET, POST")),
+                withMethods.toString());
+        checkTrue("endpoints.method.unknown", withMethods.stream().anyMatch(endpoint ->
+                        endpoint.value().equals("/api/v2/bare") && endpoint.method().isEmpty()),
+                withMethods.toString());
+        checkTrue("endpoints.method.ajaxOnly", withMethods.stream().anyMatch(endpoint ->
+                        endpoint.value().equals("/api/v2/only-call")
+                                && endpoint.method().equals("GET")),
+                withMethods.toString());
     }
 
     private static void sensitiveTests() {
@@ -388,7 +406,7 @@ public final class EngineTest {
         AnalysisResult valid = Analyzer.analyze("fetch('/api/files', { body: { token: value } })");
         check("combined.valid.parseError", valid.parseError, null);
         check("combined.valid.endpoint", valid.endpoints.get(0),
-                new EndpointFinding("/api/files", "api", 1));
+                new EndpointFinding("/api/files", "api", 1, "GET"));
         checkTrue("combined.valid.ajax", valid.ajaxCalls.stream().anyMatch(call ->
                 call.type().equals("fetch") && call.url().equals("/api/files")), valid.ajaxCalls.toString());
 

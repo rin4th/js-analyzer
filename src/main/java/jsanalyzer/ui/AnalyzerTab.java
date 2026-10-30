@@ -69,7 +69,7 @@ public final class AnalyzerTab extends JPanel implements AnalysisStore.Listener 
         this.api = api;
         this.store = store;
         this.autoFetcher = autoFetcher;
-        this.detail = new DetailPanel(api);
+        this.detail = new DetailPanel(api, store::observedMethods);
         store.addListener(this);
         buildUi(api);
         refresh();
@@ -100,7 +100,7 @@ public final class AnalyzerTab extends JPanel implements AnalysisStore.Listener 
             }
         });
         JButton reanalyze = new JButton("Re-analyze");
-        reanalyze.setToolTipText("Re-run the analysis for the selected file");
+        reanalyze.setToolTipText("Fetch the file again and re-run the analysis (sources are not kept in memory)");
         reanalyze.addActionListener(event -> {
             JsFile file = selectedFile();
             if (file == null) {
@@ -130,8 +130,9 @@ public final class AnalyzerTab extends JPanel implements AnalysisStore.Listener 
         JButton export = new JButton("Export report…");
         export.addActionListener(event -> exportReport());
         JButton exportSources = new JButton("Export .js files…");
-        exportSources.setToolTipText("Write every collected JavaScript source to a folder, with a manifest");
-        exportSources.addActionListener(event -> exportSources());
+        exportSources.setToolTipText("Fetch every collected file again and write it to a folder, with a manifest "
+                + "(only findings are kept in memory)");
+        exportSources.addActionListener(event -> exportSources(exportSources));
         JButton scanSiteMap = new JButton("Scan Burp history");
         scanSiteMap.setToolTipText("Analyze in-scope JavaScript responses already stored in Proxy history and the site map");
         scanSiteMap.addActionListener(event -> scanHistory(scanSiteMap));
@@ -418,7 +419,7 @@ public final class AnalyzerTab extends JPanel implements AnalysisStore.Listener 
                         : JOptionPane.WARNING_MESSAGE);
     }
 
-    private void exportSources() {
+    private void exportSources(JButton button) {
         List<JsFile> files = store.snapshot();
         if (files.isEmpty()) {
             JOptionPane.showMessageDialog(this, "There is nothing to export yet.",
@@ -432,13 +433,37 @@ public final class AnalyzerTab extends JPanel implements AnalysisStore.Listener 
         if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
             return;
         }
-        SourceExporter.Result result = SourceExporter.export(files,
-                chooser.getSelectedFile().toPath());
+        Path target = chooser.getSelectedFile().toPath();
+        String label = button.getText();
+        button.setEnabled(false);
+        button.setText("Exporting…");
+        // Sources are not kept in memory: each file is fetched again and
+        // written straight to disk, so this is network-bound and must not run
+        // on the EDT.
+        Thread worker = new Thread(() -> {
+            SourceExporter.Result result = SourceExporter.export(files, target,
+                    store.sourceProvider(), (done, total, url) -> SwingUtilities.invokeLater(
+                            () -> button.setText("Exporting " + done + "/" + total + "…")));
+            SwingUtilities.invokeLater(() -> {
+                button.setText(label);
+                button.setEnabled(true);
+                showExportReport(result);
+            });
+        }, "js-analyzer-export");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private void showExportReport(SourceExporter.Result result) {
         StringBuilder message = new StringBuilder();
         message.append("Exported ").append(result.exported).append(" JavaScript file(s) to\n")
                 .append(result.directory);
         if (result.skipped > 0) {
             message.append("\nSkipped: ").append(result.skipped);
+        }
+        if (result.changed > 0) {
+            message.append("\nContent changed since analysis: ").append(result.changed)
+                    .append(" (marked content_changed=yes in _manifest.tsv)");
         }
         if (!result.errors.isEmpty()) {
             message.append("\n\nFirst issue: ").append(result.errors.get(0));

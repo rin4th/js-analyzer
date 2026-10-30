@@ -39,6 +39,18 @@ public final class TrafficListener implements HttpHandler {
 
     @Override
     public RequestToBeSentAction handleHttpRequestToBeSent(HttpRequestToBeSent requestToBeSent) {
+        try {
+            String url = requestToBeSent.url();
+            boolean inScope = requestToBeSent.isInScope()
+                    || (api != null && api.scope().isInScope(url));
+            if (inScope) {
+                // Remember the method per path so endpoints found as bare
+                // strings can show what the browser actually sent.
+                store.recordRequest(requestToBeSent.pathWithoutQuery(), requestToBeSent.method());
+            }
+        } catch (Throwable ignored) {
+            // Recording methods must never affect the request pipeline.
+        }
         return RequestToBeSentAction.continueWith(requestToBeSent);
     }
 

@@ -46,18 +46,31 @@ public final class SourceExporterTest {
         Path temp = Files.createTempDirectory("js-analyzer-export-test");
         try {
             JsFile one = file("https://example.test/static/app.js");
-            one.source = "fetch('/api/v1/users');\n";
-            one.size = one.source.length();
+            one.contentHash = jsanalyzer.store.AnalysisStore.contentHash("fetch('/api/v1/users');\n");
+            one.size = "fetch('/api/v1/users');\n".length();
             JsFile two = file("http://example.test/static/app.js");
-            two.source = "const token = 'abc';\n";
-            two.size = two.source.length();
-            JsFile noSource = file("https://example.test/missing.js");
-            noSource.source = null;
+            two.contentHash = "stale-hash"; // content changed since analysis
+            two.size = "const token = 'abc';\n".length();
+            JsFile missing = file("https://example.test/missing.js");
 
-            SourceExporter.Result result = SourceExporter.export(List.of(one, two, noSource), temp);
+            java.util.Map<String, String> bodies = java.util.Map.of(
+                    "https://example.test/static/app.js", "fetch('/api/v1/users');\n",
+                    "http://example.test/static/app.js", "const token = 'abc';\n");
+            jsanalyzer.store.SourceProvider provider = url -> {
+                String body = bodies.get(url);
+                if (body == null) {
+                    throw new java.io.IOException("HTTP 401 when refetching");
+                }
+                return body;
+            };
+
+            SourceExporter.Result result = SourceExporter.export(List.of(one, two, missing), temp,
+                    provider);
             check("export.count", 2, result.exported);
             check("export.skipped", 1, result.skipped);
+            check("export.changed", 1, result.changed);
             check("export.errors", 1, result.errors.size());
+            check("export.errorReason", true, result.errors.get(0).contains("HTTP 401"));
             check("export.manifest", true, Files.isRegularFile(temp.resolve("_manifest.tsv")));
             check("export.report", true, Files.isRegularFile(temp.resolve("_report.txt")));
 
@@ -83,6 +96,8 @@ public final class SourceExporterTest {
             check("export.manifestUrls", true,
                     manifestLines.get(1).contains("https://example.test/static/app.js")
                             && manifestLines.get(2).contains("http://example.test/static/app.js"));
+            check("export.manifestUnchanged", true, manifestLines.get(1).endsWith("\tno"));
+            check("export.manifestChanged", true, manifestLines.get(2).endsWith("\tyes"));
         } finally {
             try (Stream<Path> walk = Files.walk(temp)) {
                 for (Path path : walk.sorted((a, b) -> b.getNameCount() - a.getNameCount())
@@ -99,7 +114,7 @@ public final class SourceExporterTest {
     }
 
     private static JsFile file(String url) {
-        return new JsFile(url, url, host(url), 200, "application/javascript", 0, "hash", null);
+        return new JsFile(url, url, host(url), 200, "application/javascript", 0, "hash");
     }
 
     private static String host(String url) {

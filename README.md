@@ -10,7 +10,7 @@ functions, and potential DOM XSS flows).
 Burp  ──►  HTTP handler  ──►  in-scope + JavaScript?  ──►  dedupe store  ──►  analyzer
                                                                               │
                                           "JS Analyzer" tab  ◄────────────────┘
-                                          file list  +  findings tabs + source viewer
+                                          file list  +  findings tabs
 ```
 
 - Java 17 source, compiled to Java 17 bytecode
@@ -36,6 +36,7 @@ selected — 139 endpoints, 52 secret matches, 6 Ajax calls, 9 DOM XSS leads and
 - [What gets collected](#what-gets-collected)
 - [Deduplication](#deduplication)
 - [Using the tab](#using-the-tab)
+- [Memory](#memory)
 - [Findings reference](#findings-reference)
 - [Why a file shown in Sources may be missing](#why-a-file-shown-in-sources-may-be-missing)
 - [Exporting the collected JavaScript](#exporting-the-collected-javascript)
@@ -79,7 +80,7 @@ registration for `burp.api.montoya.BurpExtension`. Build output goes to
 5. Browse the target. A **JS Analyzer** tab appears in Burp's main tab bar.
 
 The extension logs `JS Analyzer <version> loaded` (for example
-`JS Analyzer 1.3.1 loaded`) to the extension Output tab, so you can confirm
+`JS Analyzer 1.6.0 loaded`) to the extension Output tab, so you can confirm
 which build Burp is actually running. If the tab
 does not appear, check the Output/Errors tabs for a class-loading or
 API-version error, and confirm the Burp version is 2024.7 or newer.
@@ -113,12 +114,16 @@ Files are keyed by URL **without the query string**, so `app.js?v=1` and
 
 - content fingerprint unchanged → the file is **not analyzed again**; it is
   only counted as a duplicate hit (status bar and `seen N times`);
-- content changed → the entry is re-analyzed in place and its findings and
-  source are replaced.
+- content changed → the entry is re-analyzed in place and its findings are
+  replaced.
 
 Each analysis runs on a background worker, so Burp's proxy is never blocked.
 The store keeps two daemon worker threads at low priority and notifies the UI
-when entries change. Analysis is linear in file size: a 670 KB minified bundle
+when entries change. Only findings and metadata are retained: the response body
+is analyzed and then dropped, so collecting hundreds of bundles does not fill
+Burp's heap with their text. Anything that needs the code again (Re-analyze,
+Export .js files…) fetches it on demand — see
+[Exporting the collected JavaScript](#exporting-the-collected-javascript). Analysis is linear in file size: a 670 KB minified bundle
 takes ~0.7 s and an 8 MB bundle ~1.3 s on a normal desktop.
 
 ## Using the tab
@@ -130,15 +135,14 @@ pane for the selected file on the right.
 |---|---|
 | File list | URL, status, size, finding counts, hit count, analysis time. Sortable columns. |
 | Filter | Case-insensitive substring filter on the URL. |
-| Detail pane | Tabs for **Source**, **Endpoints**, **Secrets**, **Ajax / Fetch**, **DOM XSS**, **Functions**. |
-| Double-click a finding row | Opens the Source tab, scrolls to and highlights the matching line. |
-| Source tab | Read-only source viewer. Files with very long logical lines (minified bundles) are wrapped automatically so the code is actually visible. |
+| Detail pane | Tabs for **Endpoints**, **Secrets**, **Ajax / Fetch**, **DOM XSS**, **Functions**. There is no source viewer: selecting a multi-megabyte bundle only fills the findings tables, so it never stalls Burp. |
+| Line column | Every findings table carries the line number in the original file, so you can open the source in your editor at that line. |
 | Right-click a file | Copy URL, copy a text report for that file, re-analyze, remove, open URL in browser. |
 | Ctrl+C in a findings table | Copies the selected rows as tab-separated text. |
-| Re-analyze | Re-runs the analysis for the selected file without refetching it. |
+| Re-analyze | Fetches the file again and re-runs the analysis (the body is not kept in memory). |
 | Remove / Clear all | Drops one entry or every entry from the current session. |
 | Export report… | Writes a plain-text report of the findings for all collected files. |
-| Export .js files… | Writes every collected JavaScript source into a folder (host/path structure), plus `_manifest.tsv` and `_report.txt`. |
+| Export .js files… | Fetches every collected file again and writes it into a folder (host/path structure), plus `_manifest.tsv` and `_report.txt`. Runs on a background thread with a progress counter. |
 | Scan Burp history | Re-scans Proxy history and the site map for stored JavaScript responses, with a reason breakdown for skipped entries. |
 | Fetch URL… | Fetches a JavaScript URL through Burp's HTTP stack (bypassing browser and service-worker caches) and analyzes the response. |
 | Auto-fetch scripts | Checkbox (on by default). When an in-scope HTML page passes through, missing `<script src>` files are fetched through Burp automatically. |
@@ -150,14 +154,25 @@ while a file is still queued or if analysis failed.
 
 Analysis results are kept in memory for the current Burp session only. They
 survive switching tabs but not restarting Burp; use the exports if you need
-them to persist.
+them to persist. The JavaScript bodies themselves are never kept — see
+[Memory](#memory).
+
+## Memory
+
+Per collected file the store keeps the URL, status, size, content fingerprint,
+hit count, timing and the findings. The response body exists only while that
+file is being analyzed (at most two bodies at a time, 8 MB each) and is then
+released. A session with 200 bundles of 700 KB therefore holds a few MB of
+findings instead of hundreds of MB of source text (a 700 KB bundle is about
+1.4 MB once decoded into a Java String).
 
 ## Findings reference
 
-Every finding carries the line number in the original source. Double-clicking
-the row jumps to it.
+Every finding carries the line number in the original source. Use that column
+to jump to the code in your editor, or **Export .js files…** to write the
+sources out.
 
-### Endpoints (`Endpoint` / `Type` / `Line`)
+### Endpoints (`Endpoint` / `Type` / `Method` / `Observed` / `Line`)
 
 Endpoint-like strings recovered from the source:
 
@@ -170,6 +185,18 @@ Endpoint-like strings recovered from the source:
 `Type` is one of `absolute`, `server-script` (`.asp`, `.aspx`, `.ashx`,
 `.php`, `.jsp`, `.cgi`), `api`, or `relative`, so you can sort by it. Treat the
 list as an inventory of reachable routes, not as an authorization finding.
+
+Two method columns, because they answer different questions:
+
+- **Method** — read from the code that calls the endpoint:
+  `fetch(url, {method: 'POST'})`, jQuery `{type: 'POST'}`, XHR
+  `open('POST', url)`. Several calls to one URL show every method
+  (`GET, POST`). `—` means the endpoint was only seen as a string literal, so
+  there is nothing in the source to read it from.
+- **Observed** — methods Burp actually saw for that path during this session
+  (Proxy, Repeater, Scanner, the embedded browser), recorded per request path
+  without the query string. `—` means no such request has been through Burp
+  yet. This is the column to trust when it disagrees with **Method**.
 
 ### Secrets (`Keyword` / `Value` / `Line` / `Context`)
 
@@ -259,8 +286,21 @@ js-analyzer-files/
 
 Paths are sanitized (`..` and special characters cannot escape the chosen
 folder), missing extensions get `.js`, and collisions get a `_2`, `_3` suffix.
-Files without a captured body are counted as skipped. `Export report…` only
-writes the findings text, not the sources.
+`Export report…` only writes the findings text, not the sources.
+
+Because bodies are not kept in memory, the export fetches each URL again and
+writes it straight to disk — one body in memory at a time, released after the
+write. The order of preference is:
+
+1. Burp's stored response for that URL (Proxy history, then the site map): the
+   exact bytes that were analyzed, with the browser's cookies already applied;
+2. a fresh request through Burp's HTTP stack, which has no browser cookies — a
+   401/403 is reported as a skip reason rather than written as a "script".
+
+Each manifest row ends with `content_changed` (`yes`/`no`): `yes` means the
+server now serves different bytes than the ones that produced the findings, so
+line numbers in `_report.txt` may be off. The export runs on a background
+thread and the button shows `Exporting 3/36…`; the tab stays usable meanwhile.
 
 ## Configuration
 
@@ -286,17 +326,20 @@ src/main/java/jsanalyzer/
   ScriptAutoFetcher.java     background fetching of missing scripts
   ManualFetcher.java         "Fetch URL…" path through Burp's HTTP stack
   BurpHistoryImporter.java   Proxy history and site-map scan
+  BurpSourceProvider.java    stored-response-first refetch for export/re-analysis
   engine/JsLexer.java        tolerant JavaScript tokenizer
   engine/Analyzer.java       endpoints, secrets, Ajax, functions
   engine/DomXssAnalyzer.java DOM XSS dataflow
   store/AnalysisStore.java   dedupe, background analysis, listeners
-  store/JsFile.java          one collected file
+  store/JsFile.java          one collected file (findings + metadata, no body)
+  store/TrafficIndex.java    HTTP methods Burp saw, per request path
+  store/SourceProvider.java  on-demand code fetch for export/re-analysis
   model/                     finding records and AnalysisResult
   ui/AnalyzerTab.java        Burp suite tab and file list
-  ui/DetailPanel.java        findings tabs and source viewer
+  ui/DetailPanel.java        findings tabs (no source viewer)
   ui/FilesTableModel.java    file table model
   ui/ReportBuilder.java      text report export
-  ui/SourceExporter.java     source folder export and manifest
+  ui/SourceExporter.java     refetch-and-write source folder export
 src/test/java/jsanalyzer/    regression suites (plain Java, no JUnit)
 docs/js-analyzer.png       screenshot used by this README
 ```
@@ -306,23 +349,29 @@ docs/js-analyzer.png       screenshot used by this README
 `./build.sh test` runs the suites after building. Each prints
 `passed: N, failed: 0` and exits non-zero on the first failure:
 
-- `EngineTest` — 86 assertions mirroring the `js-extractor` test suite
+- `EngineTest` — 95 assertions mirroring the `js-extractor` test suite
   (endpoint classification, secrets, fetch/jQuery/XHR parsing, function ranges,
   DOM XSS flows, malformed-source fallbacks, modern syntax such as private
   fields and optional chaining);
 - `BurpHistoryImporterTest` — 16 assertions covering Proxy history/site-map
   scanning, dedupe, scope filtering and skip-reason reporting;
+- `BurpSourceProviderTest` — 9 assertions covering the on-demand refetch used by
+export and re-analysis: stored Proxy/site-map responses first, network
+fallback, 304/empty stored responses, query-string matching and error reasons;
 - `ManualFetcherTest` — 11 assertions covering the manual fetch path, status
   handling and non-JavaScript rejection;
 - `HtmlScriptExtractorTest` — 10 assertions covering script-tag extraction,
   URL resolution and de-duplication;
 - `ScriptAutoFetcherTest` — 10 assertions covering automatic fetching, scope
   filtering, skip rules and the on/off switch;
-- `SourceExporterTest` — 21 assertions covering file naming, path-traversal
-  protection, collisions, and the exported manifest/sources;
-- `UiSmokeTest` — 31 assertions covering dedupe, re-analysis on change, the
-  file table, detail tabs, double-click line jump, minified-source wrapping,
-  and JS detection.
+- `SourceExporterTest` — 25 assertions covering file naming, path-traversal
+  protection, collisions, refetch failures, changed-content marking, and the
+  exported manifest/sources;
+- `UiSmokeTest` — 44 assertions covering dedupe, re-analysis on change,
+  refetch-based re-analysis (success and failure), the absence of a retained
+  source field, the file table, the five detail tabs, the absence of a source
+  viewer, endpoint Method/Observed columns, showing a 743 KB minified bundle
+  without stalling, and JS detection.
 
 The suites use a small plain-Java harness rather than JUnit, so the build has no
 dependency beyond the JDK and the Montoya API jar. They run headless
@@ -347,13 +396,18 @@ dependency beyond the JDK and the Montoya API jar. They run headless
   keep `BurpHistoryImporter` consistent — it applies the same rules to stored
   responses.
 - The version in the jar manifest is set in `build.sh`
-  (`Implementation-Version: 1.3.1`).
+  (`Implementation-Version: 1.6.0`).
 
 ## Limitations
 
 - Results are **leads, not confirmed vulnerabilities** — validate every finding
   in the target's context.
 - Analysis state is in memory only; restarting Burp clears it.
+- Exporting .js files needs the code again, so it refetches each URL: Burp's
+  stored response is used when it still has one, otherwise a direct request is
+  made, which carries no browser cookies and can return 401/403 for
+  authenticated bundles. Files whose content changed since analysis are marked
+  `content_changed=yes` in `_manifest.tsv`.
 - Only in-scope traffic is collected; out-of-scope responses are ignored even
   if they are JavaScript.
 - Responses over 8 MB are skipped to keep the proxy responsive.
