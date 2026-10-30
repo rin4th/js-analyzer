@@ -80,7 +80,7 @@ registration for `burp.api.montoya.BurpExtension`. Build output goes to
 5. Browse the target. A **JS Analyzer** tab appears in Burp's main tab bar.
 
 The extension logs `JS Analyzer <version> loaded` (for example
-`JS Analyzer 1.6.0 loaded`) to the extension Output tab, so you can confirm
+`JS Analyzer 1.7.0 loaded`) to the extension Output tab, so you can confirm
 which build Burp is actually running. If the tab
 does not appear, check the Output/Errors tabs for a class-loading or
 API-version error, and confirm the Burp version is 2024.7 or newer.
@@ -138,6 +138,7 @@ pane for the selected file on the right.
 | Detail pane | Tabs for **Endpoints**, **Secrets**, **Ajax / Fetch**, **DOM XSS**, **Functions**. There is no source viewer: selecting a multi-megabyte bundle only fills the findings tables, so it never stalls Burp. |
 | Line column | Every findings table carries the line number in the original file, so you can open the source in your editor at that line. |
 | Right-click a file | Copy URL, copy a text report for that file, re-analyze, remove, open URL in browser. |
+| Right-click an endpoint | **Send to Repeater** (opens the endpoint with the method the code uses; relative paths resolve against the JavaScript file's URL) or **Copy endpoint**. |
 | Ctrl+C in a findings table | Copies the selected rows as tab-separated text. |
 | Re-analyze | Fetches the file again and re-runs the analysis (the body is not kept in memory). |
 | Remove / Clear all | Drops one entry or every entry from the current session. |
@@ -197,6 +198,13 @@ Two method columns, because they answer different questions:
   (Proxy, Repeater, Scanner, the embedded browser), recorded per request path
   without the query string. `—` means no such request has been through Burp
   yet. This is the column to trust when it disagrees with **Method**.
+
+Right-click a row and choose **Send to Repeater** to open that endpoint in a
+Repeater tab. The request uses the first method in the **Method** column (`GET`
+when the source does not say), the endpoint is resolved against the JavaScript
+file's URL — `/api/x` and `api/x` both work — and endpoints containing template
+placeholders (`${id}`) are refused instead of guessing a path. **Copy endpoint**
+copies the raw value.
 
 ### Secrets (`Keyword` / `Value` / `Line` / `Context`)
 
@@ -367,11 +375,12 @@ fallback, 304/empty stored responses, query-string matching and error reasons;
 - `SourceExporterTest` — 25 assertions covering file naming, path-traversal
   protection, collisions, refetch failures, changed-content marking, and the
   exported manifest/sources;
-- `UiSmokeTest` — 44 assertions covering dedupe, re-analysis on change,
+- `UiSmokeTest` — 54 assertions covering dedupe, re-analysis on change,
   refetch-based re-analysis (success and failure), the absence of a retained
   source field, the file table, the five detail tabs, the absence of a source
-  viewer, endpoint Method/Observed columns, showing a 743 KB minified bundle
-  without stalling, and JS detection.
+  viewer, endpoint Method/Observed columns, endpoint-to-Repeater URL/method
+  resolution, showing a 743 KB minified bundle without stalling, and JS
+  detection.
 
 The suites use a small plain-Java harness rather than JUnit, so the build has no
 dependency beyond the JDK and the Montoya API jar. They run headless
@@ -396,7 +405,7 @@ dependency beyond the JDK and the Montoya API jar. They run headless
   keep `BurpHistoryImporter` consistent — it applies the same rules to stored
   responses.
 - The version in the jar manifest is set in `build.sh`
-  (`Implementation-Version: 1.6.0`).
+  (`Implementation-Version: 1.7.0`).
 
 ## Limitations
 

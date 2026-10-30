@@ -109,6 +109,26 @@ public final class UiSmokeTest {
             check("ui.endpoint.noObserved", "\u2014", endpointsModel.getValueAt(bare, 3));
         }
 
+        // Endpoint -> Repeater request building (the popup action's pure parts).
+        check("repeater.rootRelative", "https://example.test/api/v1/users?active=1",
+                DetailPanel.absoluteUrl("https://example.test/static/app.js",
+                        "/api/v1/users?active=1"));
+        check("repeater.barePath", "https://example.test/static/handlers/upload.ashx",
+                DetailPanel.absoluteUrl("https://example.test/static/app.js",
+                        "handlers/upload.ashx"));
+        check("repeater.protocolRelative", "https://cdn.test/lib.js",
+                DetailPanel.absoluteUrl("https://example.test/static/app.js", "//cdn.test/lib.js"));
+        check("repeater.absolute", "http://other.test/x.js",
+                DetailPanel.absoluteUrl("https://example.test/static/app.js",
+                        "http://other.test/x.js"));
+        check("repeater.template", null,
+                DetailPanel.absoluteUrl("https://example.test/static/app.js", "/api/${id}"));
+        check("repeater.method.first", "POST", DetailPanel.methodFor("POST, GET"));
+        check("repeater.method.known", "DELETE", DetailPanel.methodFor("delete"));
+        check("repeater.method.dash", "GET", DetailPanel.methodFor("\u2014"));
+        check("repeater.method.blank", "GET", DetailPanel.methodFor(""));
+        check("repeater.tabName", "/api/v1/users", DetailPanel.repeaterTabName("/api/v1/users"));
+
         // Selecting an enormous minified file used to block Burp while a
         // JTextArea was filled with the whole bundle.
         StringBuilder big = new StringBuilder(743_000);

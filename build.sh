@@ -31,7 +31,7 @@ mkdir -p build/classes/META-INF/services
 cp build/META-INF/services/burp.api.montoya.BurpExtension \
    build/classes/META-INF/services/burp.api.montoya.BurpExtension
 
-printf 'Manifest-Version: 1.0\nImplementation-Title: JS Analyzer\nImplementation-Version: 1.6.0\nCreated-By: build.sh\n\n' \
+printf 'Manifest-Version: 1.0\nImplementation-Title: JS Analyzer\nImplementation-Version: 1.7.0\nCreated-By: build.sh\n\n' \
   > build/MANIFEST.MF
 
 jar --create --file dist/js-analyzer-burp.jar --manifest build/MANIFEST.MF -C build/classes .

@@ -1,6 +1,7 @@
 package jsanalyzer.ui;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.message.requests.HttpRequest;
 import jsanalyzer.model.AjaxFinding;
 import jsanalyzer.model.AnalysisResult;
 import jsanalyzer.model.DomXssFinding;
@@ -12,7 +13,9 @@ import jsanalyzer.store.JsFile;
 import javax.swing.BorderFactory;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
+import javax.swing.JMenuItem;
 import javax.swing.JPanel;
+import javax.swing.JPopupMenu;
 import javax.swing.JScrollPane;
 import javax.swing.JTabbedPane;
 import javax.swing.JTable;
@@ -27,8 +30,11 @@ import java.awt.Font;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.awt.event.ActionEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Function;
 
 /**
@@ -59,6 +65,8 @@ public final class DetailPanel extends JPanel {
     private final JLabel metaLabel = new JLabel(" ");
     private final JLabel parseNote = new JLabel();
     private final JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP);
+    /** File whose findings are on screen; used to resolve relative endpoints. */
+    private JsFile currentFile;
 
     private final DefaultTableModel endpointsModel = tableModel(
             "Endpoint", "Type", "Method", "Observed", "Line");
@@ -96,8 +104,9 @@ public final class DetailPanel extends JPanel {
         header.add(metaLabel, BorderLayout.SOUTH);
         add(header, BorderLayout.NORTH);
 
-        tabs.addTab("Endpoints", scroll(createTable(endpointsModel,
-                new int[]{430, 100, 90, 90, 60})));
+        JTable endpointsTable = createTable(endpointsModel, new int[]{430, 100, 90, 90, 60});
+        installEndpointActions(endpointsTable);
+        tabs.addTab("Endpoints", scroll(endpointsTable));
         tabs.addTab("Secrets", scroll(createTable(secretsModel,
                 new int[]{90, 480, 60, 220})));
         tabs.addTab("Ajax / Fetch", scroll(createTable(ajaxModel,
@@ -112,6 +121,7 @@ public final class DetailPanel extends JPanel {
     }
 
     public void show(JsFile file) {
+        currentFile = file;
         parseNote.setVisible(false);
         if (file == null) {
             urlLabel.setText("No file selected");
@@ -307,6 +317,138 @@ public final class DetailPanel extends JPanel {
                 }
             }
         });
+    }
+
+    // ------------------------------------------------------------------
+    // Endpoint actions
+    // ------------------------------------------------------------------
+
+    private void installEndpointActions(JTable table) {
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem send = new JMenuItem("Send to Repeater");
+        send.setToolTipText("Open this endpoint in Repeater with the method the code uses");
+        send.addActionListener(event -> sendToRepeater(table));
+        JMenuItem copy = new JMenuItem("Copy endpoint");
+        copy.addActionListener(event -> copySelectedValue(table));
+        menu.add(send);
+        menu.add(copy);
+
+        MouseAdapter mouse = new MouseAdapter() {
+            private void maybeShow(MouseEvent event) {
+                if (!event.isPopupTrigger()) {
+                    return;
+                }
+                int row = table.rowAtPoint(event.getPoint());
+                if (row >= 0) {
+                    table.setRowSelectionInterval(row, row);
+                }
+                if (table.getSelectedRow() < 0) {
+                    return;
+                }
+                menu.show(table, event.getX(), event.getY());
+            }
+
+            @Override
+            public void mousePressed(MouseEvent event) {
+                maybeShow(event);
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent event) {
+                maybeShow(event);
+            }
+        };
+        table.addMouseListener(mouse);
+    }
+
+    private void sendToRepeater(JTable table) {
+        JsFile file = currentFile;
+        int row = table.getSelectedRow();
+        if (file == null || row < 0 || api == null) {
+            return;
+        }
+        Object value = table.getValueAt(row, 0);
+        String endpoint = value == null ? "" : value.toString();
+        String url = absoluteUrl(file.url, endpoint);
+        if (url == null) {
+            log("JS Analyzer: cannot resolve endpoint '" + endpoint + "' to a URL");
+            return;
+        }
+        String method = methodFor(table.getValueAt(row, 2));
+        try {
+            HttpRequest request = HttpRequest.httpRequestFromUrl(url).withMethod(method);
+            api.repeater().sendToRepeater(request, repeaterTabName(endpoint));
+        } catch (RuntimeException exception) {
+            log("JS Analyzer: send to Repeater failed: " + exception.getMessage());
+        }
+    }
+
+    private void copySelectedValue(JTable table) {
+        int row = table.getSelectedRow();
+        if (row < 0) {
+            return;
+        }
+        Object value = table.getValueAt(row, 0);
+        if (value != null) {
+            Toolkit.getDefaultToolkit().getSystemClipboard()
+                    .setContents(new StringSelection(value.toString()), null);
+        }
+    }
+
+    private void log(String message) {
+        if (api == null) {
+            return;
+        }
+        try {
+            api.logging().logToOutput(message);
+        } catch (RuntimeException ignored) {
+            // Logging must never break the UI.
+        }
+    }
+
+    /** Repeater tab title: the endpoint itself, shortened when it is long. */
+    public static String repeaterTabName(String endpoint) {
+        String name = endpoint == null ? "" : endpoint.trim();
+        if (name.isEmpty()) {
+            return "JS endpoint";
+        }
+        return name.length() <= 48 ? name : "…" + name.substring(name.length() - 47);
+    }
+
+    /** Method to send: the first method the code uses ("POST, GET" -> POST), else GET. */
+    public static String methodFor(Object cell) {
+        String text = cell == null ? "" : cell.toString().trim();
+        if (text.isEmpty() || text.equals("—")) {
+            return "GET";
+        }
+        int comma = text.indexOf(',');
+        String first = (comma < 0 ? text : text.substring(0, comma)).trim().toUpperCase(Locale.ROOT);
+        return first.matches("[A-Z]{1,10}") ? first : "GET";
+    }
+
+    /**
+     * Resolves an endpoint value against the URL of the JavaScript file it came
+     * from (absolute, protocol-relative, root-relative or bare path). Returns
+     * null for template fragments, which cannot be turned into a request.
+     */
+    public static String absoluteUrl(String base, String endpoint) {
+        String value = endpoint == null ? "" : endpoint.trim();
+        if (value.isEmpty() || value.contains("{") || value.contains("}")) {
+            return null;
+        }
+        if (value.startsWith("http://") || value.startsWith("https://")) {
+            return value;
+        }
+        try {
+            java.net.URI baseUri = java.net.URI.create(base);
+            if (baseUri.getScheme() == null || baseUri.getHost() == null) {
+                return null;
+            }
+            java.net.URI resolved = baseUri.resolve(value);
+            return resolved.isAbsolute() ? resolved.toString() : null;
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private Font displayFont() {
